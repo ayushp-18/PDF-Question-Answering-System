@@ -11,5 +11,7 @@ langchain-huggingface
 sentence-transformers
 torch
 
+rank-bm25
+
 langchain-google-genai
 google-generativeai
