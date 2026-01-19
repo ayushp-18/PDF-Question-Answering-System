@@ -6,11 +6,9 @@ It uses a Retrieval-Augmented Generation (RAG) approach with chat history awaren
 
 ---
 
-## Try It Out
+## DEMO
+<img width="840" height="534" alt="image" src="https://github.com/user-attachments/assets/8be34649-b37f-4ced-8452-e0313adca0db" />
 
-You can access the deployed Streamlit application here:
-
-https://your-streamlit-app-url
 
 ---
 
