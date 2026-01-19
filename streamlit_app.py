@@ -35,9 +35,9 @@ def chunk_text_to_documents(text: str, source_name: str) -> List[Document]:
     return splitter.split_documents([base_doc])
 
 
-def build_vectorstore(all_docs: List[Document]):
+def build_vectorstore(docs: List[Document]):
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    return FAISS.from_documents(all_docs, embedding=embeddings)
+    return FAISS.from_documents(docs, embedding=embeddings)
 
 
 def get_llm(temperature: float):
@@ -47,15 +47,18 @@ def get_llm(temperature: float):
 
     os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 
+    # ✅ Use model that works for v1beta
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-pro",
         temperature=temperature,
     )
 
 
 def answer_question(llm, retriever, question: str) -> str:
+    # ✅ New LangChain interface: use invoke()
     docs = retriever.invoke(question)
 
+    # Keep context small to avoid token/request-size issues
     context = "\n\n".join(
         [
             f"Source: {d.metadata.get('source','unknown')}\n{d.page_content[:1500]}"
@@ -82,13 +85,13 @@ Answer (max 5 lines):
         return getattr(response, "content", str(response))
     except Exception as e:
         st.error(f"Gemini call failed: {e}")
-        return "❌ Gemini call failed. See the error above."
+        return "❌ Gemini call failed. See error above."
 
 
 # ---------------------------
 # Streamlit UI
 # ---------------------------
-st.set_page_config(page_title="Document Genie - Gemini RAG", layout="wide")
+st.set_page_config(page_title="Document Genie (Gemini + FAISS)", layout="wide")
 st.title("📄 Document Genie (Gemini + FAISS)")
 st.write("Upload PDFs and ask questions based on their content.")
 
