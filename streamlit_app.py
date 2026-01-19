@@ -54,7 +54,8 @@ def get_llm(temperature: float):
 
 
 def answer_question(llm, retriever, question: str) -> str:
-    docs = retriever.get_relevant_documents(question)
+    docs = retriever.invoke(question)
+
 
     context = "\n\n".join(
         [f"Source: {d.metadata.get('source','unknown')}\n{d.page_content}" for d in docs]
