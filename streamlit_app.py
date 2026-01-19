@@ -3,31 +3,28 @@ import streamlit as st
 
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-
 from langchain_community.vectorstores import FAISS
 from langchain.retrievers import BM25Retriever, EnsembleRetriever
-
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
-
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
-
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 
-# ✅ Gemini LLM
+# ✅ Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
 # -------------------------------
 # Streamlit UI
 # -------------------------------
-st.set_page_config(page_title="Document Genie (RAG)", layout="wide")
-st.title("Conversational Chat Bot with PDF upload + Chat History")
-st.write("Upload PDFs and ask questions from the content.")
+st.set_page_config(page_title="Document Genie - RAG", layout="wide")
+st.title("Conversational Chat Bot with PDF upload support and chat history")
+st.write("Upload PDFs and chat with the content.")
 
+temperature = st.slider("Set your temperature as you require", 0.0, 1.0, 0.7)
 
 # -------------------------------
 # Secrets / Keys
@@ -38,37 +35,30 @@ if "GOOGLE_API_KEY" not in st.secrets:
 
 os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 
-# HF_TOKEN is optional unless you need it
+# HF_TOKEN is optional (only needed if your embedding requires it)
 if "HF_TOKEN" in st.secrets:
     os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
-
 
 # -------------------------------
 # Embeddings
 # -------------------------------
-# Uses local sentence-transformers model (no HF_TOKEN required usually)
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-
 # -------------------------------
-# LLM (Gemini)
+# Gemini LLM
 # -------------------------------
-temperature = st.slider("Set temperature", 0.0, 1.0, 0.7)
-
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
-    temperature=temperature,
+    temperature=temperature
 )
 
-
 # -------------------------------
-# Session ID + Storage
+# Session ID + Chat Storage
 # -------------------------------
 session_id = st.text_input("Enter your session id", value="default_session")
 
 if "store" not in st.session_state:
     st.session_state.store = {}
-
 
 # -------------------------------
 # Upload PDFs
@@ -91,28 +81,25 @@ if uploaded_documents:
         docs = loader.load()
         documents.extend(docs)
 
-    # ✅ Chunking (keep your chunk params)
+    # Chunking
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=3800,
         chunk_overlap=1000
     )
     chunks = text_splitter.split_documents(documents)
 
-    # ✅ Vector store
+    # Vector Store
     vector_store = FAISS.from_documents(documents=chunks, embedding=embeddings)
 
-    # ✅ Hybrid retriever
+    # Hybrid retriever (BM25 + FAISS)
     faiss_semantic_retriever = vector_store.as_retriever()
     bm25_retriever = BM25Retriever.from_documents(documents=chunks)
-
     retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_semantic_retriever],
         weights=[0.5, 0.5]
     )
 
-    # -------------------------------
-    # Context prompt (history aware)
-    # -------------------------------
+    # Standalone question prompt
     context_system_prompt = (
         "Given a chat history and the latest user question "
         "which might reference context in the chat history, "
@@ -129,19 +116,14 @@ if uploaded_documents:
         ]
     )
 
-    history_aware_retriever = create_history_aware_retriever(
-        llm, retriever, context_prompt
-    )
+    history_aware_retriever = create_history_aware_retriever(llm, retriever, context_prompt)
 
-    # -------------------------------
     # QA prompt
-    # -------------------------------
     system_prompt = (
         "You are an assistant for question-answering tasks. "
         "Use the following pieces of retrieved context to answer "
-        "the question. If you don't know the answer, say you don't know. "
-        "Use four sentences maximum and keep the answer concise."
-        "\n\n"
+        "the question. If you don't know the answer, say that you don't know. "
+        "Use four sentences maximum and keep the answer concise.\n\n"
         "{context}"
     )
 
@@ -156,6 +138,7 @@ if uploaded_documents:
     question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
     rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
+    # Session history store
     def get_session_history(session: str) -> BaseChatMessageHistory:
         if session not in st.session_state.store:
             st.session_state.store[session] = ChatMessageHistory()
@@ -169,7 +152,7 @@ if uploaded_documents:
         output_messages_key="answer",
     )
 
-    st.success("✅ PDFs processed. You can now ask questions.")
+    st.success("✅ PDFs processed. Ask your question below.")
 
     user_input = st.text_input("Your question:")
     if user_input:
