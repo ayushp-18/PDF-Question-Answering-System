@@ -6,131 +6,91 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_community.chat_message_histories import ChatMessageHistory
-from langchain_core.chat_history import BaseChatMessageHistory
-
-from langchain.chains import create_history_aware_retriever, create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.runnables.history import RunnableWithMessageHistory
-
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 
-st.set_page_config(page_title="PDF Q&A (OpenAI RAG)", layout="wide")
-st.title("📄 PDF Question Answering System (OpenAI + RAG)")
+# ------------------ Streamlit UI ------------------
+st.set_page_config(page_title="PDF Q&A (OpenAI)", layout="wide")
+st.title("📄 PDF Question Answering (OpenAI + FAISS)")
 
-# Check OpenAI key
+st.write("Upload a PDF and ask questions. The answer will come only from the PDF content.")
+
+# ------------------ OpenAI Key ------------------
 if "OPENAI_API_KEY" not in st.secrets:
-    st.error("OPENAI_API_KEY is missing in Streamlit secrets.")
+    st.error("❌ OPENAI_API_KEY not found in Streamlit Secrets.")
     st.stop()
 
 os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 
-# Model
+# ------------------ LLM + Embeddings ------------------
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
-# session
-session_id = st.text_input("Session ID", value="default")
+# ------------------ Upload PDFs ------------------
+uploaded_files = st.file_uploader("Upload PDF(s)", type=["pdf"], accept_multiple_files=True)
 
-# store memory
-if "store" not in st.session_state:
-    st.session_state.store = {}
+if uploaded_files:
+    all_docs = []
 
-def get_session_history(session: str) -> BaseChatMessageHistory:
-    if session not in st.session_state.store:
-        st.session_state.store[session] = ChatMessageHistory()
-    return st.session_state.store[session]
+    for uploaded_file in uploaded_files:
+        # Save to a temp file for PyPDFLoader
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            pdf_path = tmp_file.name
 
-# Upload PDFs
-uploaded_documents = st.file_uploader(
-    "Upload PDF(s)",
-    type=["pdf"],
-    accept_multiple_files=True
-)
-
-if uploaded_documents:
-    documents = []
-
-    for uploaded_document in uploaded_documents:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(uploaded_document.getvalue())
-            tmp_path = tmp.name
-
-        loader = PyPDFLoader(tmp_path)
+        loader = PyPDFLoader(pdf_path)
         docs = loader.load()
-        documents.extend(docs)
+        all_docs.extend(docs)
 
+        # delete temp
         try:
-            os.remove(tmp_path)
+            os.remove(pdf_path)
         except:
             pass
 
-    # Split
+    # Split into chunks
     splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
-    chunks = splitter.split_documents(documents)
+    chunks = splitter.split_documents(all_docs)
 
     # Vector store
     vector_store = FAISS.from_documents(chunks, embeddings)
 
-    # ✅ SIMPLE retriever (stable)
-    retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-
-    # History aware question rewriting
-    context_system_prompt = (
-        "Given a chat history and the latest user question, rewrite it as a standalone question. "
-        "Do NOT answer the question."
-    )
-
-    context_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", context_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}")
-        ]
-    )
-
-    history_aware_retriever = create_history_aware_retriever(llm, retriever, context_prompt)
-
-    # Answering prompt
-    qa_system_prompt = (
-        "You are a PDF question answering assistant. "
-        "Answer ONLY using the context below. "
-        "If the answer is not in the context, say: 'I don't know based on the PDF.'\n\n"
-        "Context:\n{context}"
-    )
-
-    qa_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", qa_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}")
-        ]
-    )
-
-    qa_chain = create_stuff_documents_chain(llm, qa_prompt)
-    rag_chain = create_retrieval_chain(history_aware_retriever, qa_chain)
-
-    conversational_rag_chain = RunnableWithMessageHistory(
-        rag_chain,
-        get_session_history,
-        input_messages_key="input",
-        history_messages_key="chat_history",
-        output_messages_key="answer",
-    )
+    st.success(f"✅ Loaded {len(all_docs)} pages and created {len(chunks)} chunks.")
 
     # Ask question
-    question = st.text_input("Ask a question from the PDF:")
+    user_question = st.text_input("Ask your question:")
 
-    if question:
-        result = conversational_rag_chain.invoke(
-            {"input": question},
-            config={"configurable": {"session_id": session_id}}
-        )
+    if user_question:
+        # Retrieve top chunks
+        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+        retrieved_docs = retriever.get_relevant_documents(user_question)
+
+        context = "\n\n".join([d.page_content for d in retrieved_docs])
+
+        prompt = f"""
+You are a helpful assistant answering ONLY from the PDF context.
+
+If the answer is not available inside the context, say:
+"I don't know based on the PDF."
+
+PDF Context:
+{context}
+
+Question: {user_question}
+
+Answer:
+"""
+
+        answer = llm.invoke(prompt)
 
         st.subheader("✅ Answer")
-        st.write(result["answer"])
+        st.write(answer.content)
+
+        # Optional: show sources
+        with st.expander("Show retrieved context"):
+            for i, d in enumerate(retrieved_docs, 1):
+                st.markdown(f"### Chunk {i}")
+                st.write(d.page_content)
 
 else:
-    st.info("Upload PDFs to start asking questions.")
+    st.info("👆 Upload PDF(s) to start.")
