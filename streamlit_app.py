@@ -56,9 +56,11 @@ def get_llm(temperature: float):
 def answer_question(llm, retriever, question: str) -> str:
     docs = retriever.invoke(question)
 
-
     context = "\n\n".join(
-        [f"Source: {d.metadata.get('source','unknown')}\n{d.page_content}" for d in docs]
+        [
+            f"Source: {d.metadata.get('source','unknown')}\n{d.page_content[:1500]}"
+            for d in docs
+        ]
     )
 
     prompt = f"""
@@ -75,8 +77,12 @@ Question:
 Answer (max 5 lines):
 """.strip()
 
-    response = llm.invoke(prompt)
-    return getattr(response, "content", str(response))
+    try:
+        response = llm.invoke(prompt)
+        return getattr(response, "content", str(response))
+    except Exception as e:
+        st.error(f"Gemini call failed: {e}")
+        return "❌ Gemini call failed. See the error above."
 
 
 # ---------------------------
