@@ -4,48 +4,37 @@ import streamlit as st
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 from langchain_community.vectorstores import FAISS
-from langchain.retrievers import BM25Retriever, EnsembleRetriever
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_core.runnables.history import RunnableWithMessageHistory
 
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.runnables.history import RunnableWithMessageHistory
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 
-# ---------------------------
-# Streamlit UI
-# ---------------------------
-st.set_page_config(page_title="PDF RAG Chatbot", layout="wide")
-st.title("📄 Conversational PDF Chatbot (OpenAI + RAG)")
-st.write("Upload one or more PDFs and ask questions. The assistant answers from your PDF content.")
+st.set_page_config(page_title="PDF Q&A (OpenAI RAG)", layout="wide")
+st.title("📄 PDF Question Answering System (OpenAI + RAG)")
 
-temperature = st.slider("Temperature", 0.0, 1.0, 0.3, 0.05)
-
-# ---------------------------
-# API Key from Streamlit Secrets
-# ---------------------------
+# Check OpenAI key
 if "OPENAI_API_KEY" not in st.secrets:
-    st.error("OPENAI_API_KEY is missing in Streamlit secrets. Add it in Settings → Secrets.")
+    st.error("OPENAI_API_KEY is missing in Streamlit secrets.")
     st.stop()
 
 os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 
-# LLM + Embeddings
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=temperature)
+# Model
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
+# session
+session_id = st.text_input("Session ID", value="default")
 
-# Session ID (optional)
-session_id = st.text_input("Session ID", value="default_session")
-
-# Stateful chat store
+# store memory
 if "store" not in st.session_state:
     st.session_state.store = {}
 
@@ -54,10 +43,9 @@ def get_session_history(session: str) -> BaseChatMessageHistory:
         st.session_state.store[session] = ChatMessageHistory()
     return st.session_state.store[session]
 
-
 # Upload PDFs
 uploaded_documents = st.file_uploader(
-    "Upload PDF file(s)",
+    "Upload PDF(s)",
     type=["pdf"],
     accept_multiple_files=True
 )
@@ -66,7 +54,6 @@ if uploaded_documents:
     documents = []
 
     for uploaded_document in uploaded_documents:
-        # safer temp file for Streamlit Cloud
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(uploaded_document.getvalue())
             tmp_path = tmp.name
@@ -75,64 +62,55 @@ if uploaded_documents:
         docs = loader.load()
         documents.extend(docs)
 
-        # cleanup temp file
         try:
             os.remove(tmp_path)
         except:
             pass
 
-    # Split into chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
-    chunks = text_splitter.split_documents(documents)
+    # Split
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
+    chunks = splitter.split_documents(documents)
 
     # Vector store
     vector_store = FAISS.from_documents(chunks, embeddings)
 
-    # Retrievers (Hybrid: BM25 + FAISS)
-    faiss_retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-    bm25_retriever = BM25Retriever.from_documents(chunks)
-    bm25_retriever.k = 4
+    # ✅ SIMPLE retriever (stable)
+    retriever = vector_store.as_retriever(search_kwargs={"k": 4})
 
-    retriever = EnsembleRetriever(
-        retrievers=[bm25_retriever, faiss_retriever],
-        weights=[0.5, 0.5],
-    )
-
-    # History aware retriever prompt
+    # History aware question rewriting
     context_system_prompt = (
-        "Given a chat history and the latest user question which might reference context "
-        "in the chat history, rewrite it as a standalone question."
-        "Do NOT answer the question. Only rewrite it if needed."
+        "Given a chat history and the latest user question, rewrite it as a standalone question. "
+        "Do NOT answer the question."
     )
 
     context_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", context_system_prompt),
             MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
+            ("human", "{input}")
         ]
     )
 
     history_aware_retriever = create_history_aware_retriever(llm, retriever, context_prompt)
 
-    # QA prompt
-    system_prompt = (
-        "You are an assistant for question-answering tasks. "
-        "Answer ONLY using the provided context. "
-        "If you don't know the answer, say you don't know.\n\n"
+    # Answering prompt
+    qa_system_prompt = (
+        "You are a PDF question answering assistant. "
+        "Answer ONLY using the context below. "
+        "If the answer is not in the context, say: 'I don't know based on the PDF.'\n\n"
         "Context:\n{context}"
     )
 
     qa_prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", system_prompt),
+            ("system", qa_system_prompt),
             MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
+            ("human", "{input}")
         ]
     )
 
-    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
-    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+    qa_chain = create_stuff_documents_chain(llm, qa_prompt)
+    rag_chain = create_retrieval_chain(history_aware_retriever, qa_chain)
 
     conversational_rag_chain = RunnableWithMessageHistory(
         rag_chain,
@@ -142,16 +120,17 @@ if uploaded_documents:
         output_messages_key="answer",
     )
 
-    # Chat input
-    user_input = st.text_input("Ask a question from your PDFs:")
+    # Ask question
+    question = st.text_input("Ask a question from the PDF:")
 
-    if user_input:
-        response = conversational_rag_chain.invoke(
-            {"input": user_input},
-            config={"configurable": {"session_id": session_id}},
+    if question:
+        result = conversational_rag_chain.invoke(
+            {"input": question},
+            config={"configurable": {"session_id": session_id}}
         )
-        st.write("### ✅ Answer")
-        st.write(response["answer"])
+
+        st.subheader("✅ Answer")
+        st.write(result["answer"])
 
 else:
-    st.info("Upload PDF(s) to start chatting.")
+    st.info("Upload PDFs to start asking questions.")
